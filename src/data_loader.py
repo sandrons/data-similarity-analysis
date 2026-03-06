@@ -4,7 +4,10 @@ Data loading and preprocessing utilities for the similarity analysis package.
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Tuple, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as _pd
 
 
 class DataLoader:
@@ -43,6 +46,43 @@ class DataLoader:
             archive = np.load(path)
             return archive[list(archive.keys())[0]].astype(float)
         return np.load(path).astype(float)
+
+    @staticmethod
+    def from_parquet(path: Union[str, Path], **kwargs) -> np.ndarray:
+        """
+        Load a dataset from a Parquet file, retaining only numeric columns.
+
+        Requires ``pyarrow`` or ``fastparquet`` to be installed.
+
+        Args:
+            path: Path to the Parquet file
+            **kwargs: Extra arguments forwarded to ``pandas.read_parquet``
+
+        Returns:
+            2D float array (n_samples x n_numeric_features)
+        """
+        try:
+            df = pd.read_parquet(path, **kwargs)
+        except ImportError as exc:
+            raise ImportError(
+                "Reading Parquet files requires 'pyarrow' or 'fastparquet'. "
+                "Install one with: pip install pyarrow"
+            ) from exc
+        return df.select_dtypes(include=[np.number]).values.astype(float)
+
+    @staticmethod
+    def from_dataframe(df: "pd.DataFrame") -> np.ndarray:
+        """
+        Convert a pandas DataFrame to a 2D float array, retaining only
+        numeric columns.
+
+        Args:
+            df: Input DataFrame
+
+        Returns:
+            2D float array (n_samples x n_numeric_features)
+        """
+        return df.select_dtypes(include=[np.number]).values.astype(float)
 
     @staticmethod
     def from_array(data: Union[list, np.ndarray]) -> np.ndarray:

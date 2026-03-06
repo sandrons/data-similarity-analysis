@@ -1,5 +1,6 @@
 """Tests for src/data_loader.py."""
 import numpy as np
+import pandas as pd
 import pytest
 
 from src.data_loader import DataLoader
@@ -151,3 +152,55 @@ class TestSplit:
         part1, part2 = DataLoader.split(DATA_2D, ratio=0.7)
         assert len(part1) == int(len(DATA_2D) * 0.7)
         assert len(part2) == len(DATA_2D) - int(len(DATA_2D) * 0.7)
+
+
+# ---------------------------------------------------------------------------
+# from_dataframe
+# ---------------------------------------------------------------------------
+
+class TestFromDataFrame:
+    def test_selects_numeric_columns_only(self):
+        df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0], "label": ["x", "y"]})
+        result = DataLoader.from_dataframe(df)
+        assert result.shape == (2, 2)
+
+    def test_returns_2d_float_array(self):
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]})
+        result = DataLoader.from_dataframe(df)
+        assert result.ndim == 2
+        assert result.dtype == float
+
+    def test_values_match_dataframe(self):
+        df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+        result = DataLoader.from_dataframe(df)
+        np.testing.assert_array_equal(result, df.values)
+
+    def test_all_non_numeric_returns_empty(self):
+        df = pd.DataFrame({"name": ["alice", "bob"], "cat": ["x", "y"]})
+        result = DataLoader.from_dataframe(df)
+        assert result.shape[1] == 0
+
+
+# ---------------------------------------------------------------------------
+# from_parquet
+# ---------------------------------------------------------------------------
+
+class TestFromParquet:
+    def test_loads_numeric_columns(self, tmp_path):
+        pytest.importorskip("pyarrow", reason="pyarrow not installed")
+        df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0], "label": ["x", "y"]})
+        path = tmp_path / "data.parquet"
+        df.to_parquet(path)
+        result = DataLoader.from_parquet(path)
+        assert result.shape == (2, 2)
+        assert result.dtype == float
+
+    def test_shape_and_values(self, tmp_path):
+        pytest.importorskip("pyarrow", reason="pyarrow not installed")
+        data = RNG.normal(size=(20, 3))
+        df = pd.DataFrame(data, columns=["f0", "f1", "f2"])
+        path = tmp_path / "data.parquet"
+        df.to_parquet(path)
+        result = DataLoader.from_parquet(path)
+        assert result.shape == (20, 3)
+        np.testing.assert_allclose(result, data)
