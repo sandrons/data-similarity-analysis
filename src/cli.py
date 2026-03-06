@@ -37,7 +37,9 @@ def _load(path: str) -> np.ndarray:
         return DataLoader.from_csv(p)
     if p.suffix in (".npy", ".npz"):
         return DataLoader.from_numpy(p)
-    raise ValueError(f"Unsupported file type '{p.suffix}'. Use .csv, .npy, or .npz")
+    if p.suffix == ".parquet":
+        return DataLoader.from_parquet(p)
+    raise ValueError(f"Unsupported file type '{p.suffix}'. Use .csv, .npy, .npz, or .parquet")
 
 
 def _run_basic(data1: np.ndarray, data2: np.ndarray) -> dict:
