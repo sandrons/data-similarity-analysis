@@ -4,6 +4,14 @@ Advanced similarity metrics using machine learning techniques.
 Includes embedding-based (PCA/SVD/kernel), LDA topic modeling,
 and clustering-based (KMeans, DBSCAN) approaches for comparing
 numerical datasets.
+
+Caching
+-------
+Instantiate ``AdvancedSimilarityAnalyzer`` and call ``fit(reference_data)``
+once to pre-fit PCA, SVD, LDA, and KMeans on a reference dataset.
+Subsequent calls to any metric method will reuse the cached models instead
+of re-fitting on the combined data, which is significantly faster when
+comparing many query datasets against the same reference.
 """
 import numpy as np
 from scipy.stats import entropy
@@ -21,26 +29,98 @@ class AdvancedSimilarityAnalyzer:
 
     Designed for 2D numerical datasets of shape (n_samples, n_features).
     All methods accept 1D inputs and promote them to 2D automatically.
+
+    When comparing many datasets against a single reference, call
+    ``fit(reference_data)`` first to cache the expensive model fits.
     """
+
+    def __init__(self):
+        self._cache: Dict = {}
+
+    # ------------------------------------------------------------------
+    # Reference fitting (caching)
+    # ------------------------------------------------------------------
+
+    def fit(
+        self,
+        reference_data: np.ndarray,
+        n_components: int = 2,
+        n_topics: int = 5,
+        n_clusters: int = 3,
+    ) -> "AdvancedSimilarityAnalyzer":
+        """
+        Fit and cache PCA, SVD, LDA, and KMeans on *reference_data*.
+
+        After calling this method, all metric methods will reuse the cached
+        models rather than re-fitting on the combined (reference + query) data.
+        This is the main speed-up when comparing many queries against one
+        reference.
+
+        Args:
+            reference_data: The reference dataset (n_samples x n_features)
+            n_components: PCA / SVD embedding dimensions to retain
+            n_topics: Number of LDA latent topics
+            n_clusters: Number of KMeans clusters
+
+        Returns:
+            self  (allows method chaining)
+        """
+        data = np.atleast_2d(np.asarray(reference_data, dtype=float))
+        n, d = data.shape
+
+        # PCA
+        k_pca = min(n_components, d, n)
+        pca = PCA(n_components=k_pca)
+        pca.fit(data)
+        self._cache["pca"] = pca
+
+        # SVD
+        k_svd = min(n_components, d, n - 1)
+        svd = TruncatedSVD(n_components=k_svd, random_state=42)
+        svd.fit(data)
+        self._cache["svd"] = svd
+
+        # LDA (needs non-negative values)
+        shift = float(data.min())
+        lda_data = data - shift if shift < 0 else data
+        k_lda = min(n_topics, n, d)
+        lda = LatentDirichletAllocation(
+            n_components=k_lda, random_state=42, max_iter=20
+        )
+        lda.fit(lda_data)
+        self._cache["lda"] = lda
+        self._cache["lda_shift"] = shift if shift < 0 else 0.0
+
+        # KMeans
+        k_km = min(n_clusters, n)
+        kmeans = KMeans(n_clusters=k_km, random_state=42, n_init=10)
+        kmeans.fit(data)
+        self._cache["kmeans"] = kmeans
+        self._cache["n_clusters"] = k_km
+
+        return self
 
     # ------------------------------------------------------------------
     # Embedding-based similarity
     # ------------------------------------------------------------------
 
-    @staticmethod
     def pca_embedding_similarity(
+        self,
         data1: np.ndarray,
         data2: np.ndarray,
         n_components: int = 2,
     ) -> float:
         """
-        Project both datasets into a shared PCA embedding space and compute
+        Project both datasets into a PCA embedding space and compute
         cosine similarity between their mean embeddings.
+
+        Uses a cached PCA model (fitted on reference data) when available;
+        otherwise fits PCA on the combined data.
 
         Args:
             data1: First dataset  (n_samples x n_features)
             data2: Second dataset (m_samples x n_features)
-            n_components: Number of principal components to retain
+            n_components: Number of principal components (ignored if cached)
 
         Returns:
             Cosine similarity in PCA space, range [-1, 1]
@@ -48,11 +128,13 @@ class AdvancedSimilarityAnalyzer:
         data1 = np.atleast_2d(np.asarray(data1, dtype=float))
         data2 = np.atleast_2d(np.asarray(data2, dtype=float))
 
-        combined = np.vstack([data1, data2])
-        k = min(n_components, combined.shape[1], combined.shape[0])
-
-        pca = PCA(n_components=k)
-        pca.fit(combined)
+        if "pca" in self._cache:
+            pca = self._cache["pca"]
+        else:
+            combined = np.vstack([data1, data2])
+            k = min(n_components, combined.shape[1], combined.shape[0])
+            pca = PCA(n_components=k)
+            pca.fit(combined)
 
         emb1 = pca.transform(data1).mean(axis=0)
         emb2 = pca.transform(data2).mean(axis=0)
@@ -62,8 +144,8 @@ class AdvancedSimilarityAnalyzer:
             return 0.0
         return float(np.dot(emb1, emb2) / (norm1 * norm2))
 
-    @staticmethod
     def svd_embedding_similarity(
+        self,
         data1: np.ndarray,
         data2: np.ndarray,
         n_components: int = 2,
@@ -72,10 +154,13 @@ class AdvancedSimilarityAnalyzer:
         Use TruncatedSVD to embed datasets into a latent space and compare
         their mean embeddings via cosine similarity.
 
+        Uses a cached SVD model (fitted on reference data) when available;
+        otherwise fits SVD on the combined data.
+
         Args:
             data1: First dataset
             data2: Second dataset
-            n_components: Number of SVD components
+            n_components: Number of SVD components (ignored if cached)
 
         Returns:
             Cosine similarity in SVD space, range [-1, 1]
@@ -83,11 +168,13 @@ class AdvancedSimilarityAnalyzer:
         data1 = np.atleast_2d(np.asarray(data1, dtype=float))
         data2 = np.atleast_2d(np.asarray(data2, dtype=float))
 
-        combined = np.vstack([data1, data2])
-        k = min(n_components, combined.shape[1], combined.shape[0] - 1)
-
-        svd = TruncatedSVD(n_components=k, random_state=42)
-        svd.fit(combined)
+        if "svd" in self._cache:
+            svd = self._cache["svd"]
+        else:
+            combined = np.vstack([data1, data2])
+            k = min(n_components, combined.shape[1], combined.shape[0] - 1)
+            svd = TruncatedSVD(n_components=k, random_state=42)
+            svd.fit(combined)
 
         emb1 = svd.transform(data1).mean(axis=0)
         emb2 = svd.transform(data2).mean(axis=0)
@@ -138,8 +225,8 @@ class AdvancedSimilarityAnalyzer:
     # LDA topic-based similarity
     # ------------------------------------------------------------------
 
-    @staticmethod
     def lda_topic_similarity(
+        self,
         data1: np.ndarray,
         data2: np.ndarray,
         n_topics: int = 5,
@@ -150,14 +237,17 @@ class AdvancedSimilarityAnalyzer:
         features as pseudo-word frequencies), infer topic distributions for
         each dataset, and return 1 - Jensen-Shannon divergence between them.
 
+        Uses a cached LDA model (fitted on reference data) when available;
+        otherwise fits LDA on the combined data.
+
         Negative values are shifted to zero before fitting so that any numeric
         data can be used.
 
         Args:
             data1: First dataset  (n_samples x n_features)
             data2: Second dataset (m_samples x n_features)
-            n_topics: Number of latent topics
-            random_state: Reproducibility seed
+            n_topics: Number of latent topics (ignored if cached)
+            random_state: Reproducibility seed (ignored if cached)
 
         Returns:
             Topic similarity in [0, 1] (1 = identical topic mixture)
@@ -165,24 +255,30 @@ class AdvancedSimilarityAnalyzer:
         data1 = np.atleast_2d(np.asarray(data1, dtype=float))
         data2 = np.atleast_2d(np.asarray(data2, dtype=float))
 
-        # LDA requires non-negative values
-        shift = min(data1.min(), data2.min())
-        if shift < 0:
-            data1 = data1 - shift
-            data2 = data2 - shift
+        if "lda" in self._cache:
+            lda = self._cache["lda"]
+            # Shift enough to make both arrays non-negative (may differ from the
+            # cached shift if query data is more negative than the reference)
+            shift = min(data1.min(), data2.min())
+            d1 = data1 - shift if shift < 0 else data1
+            d2 = data2 - shift if shift < 0 else data2
+        else:
+            shift = min(data1.min(), data2.min())
+            if shift < 0:
+                data1 = data1 - shift
+                data2 = data2 - shift
+            d1, d2 = data1, data2
 
-        combined = np.vstack([data1, data2])
-        k = min(n_topics, combined.shape[0], combined.shape[1])
+            combined = np.vstack([d1, d2])
+            k = min(n_topics, combined.shape[0], combined.shape[1])
+            lda = LatentDirichletAllocation(
+                n_components=k, random_state=random_state, max_iter=20
+            )
+            lda.fit(combined)
 
-        lda = LatentDirichletAllocation(
-            n_components=k, random_state=random_state, max_iter=20
-        )
-        lda.fit(combined)
+        topic_dist1 = lda.transform(d1).mean(axis=0)
+        topic_dist2 = lda.transform(d2).mean(axis=0)
 
-        topic_dist1 = lda.transform(data1).mean(axis=0)
-        topic_dist2 = lda.transform(data2).mean(axis=0)
-
-        # Jensen-Shannon divergence (symmetric, bounded in [0, log 2])
         m = 0.5 * (topic_dist1 + topic_dist2)
         js_div = 0.5 * entropy(topic_dist1, m) + 0.5 * entropy(topic_dist2, m)
         return float(1.0 - js_div / np.log(2))
@@ -191,30 +287,32 @@ class AdvancedSimilarityAnalyzer:
     # Clustering-based similarity
     # ------------------------------------------------------------------
 
-    @staticmethod
     def kmeans_cluster_similarity(
+        self,
         data1: np.ndarray,
         data2: np.ndarray,
         n_clusters: int = 3,
         random_state: int = 42,
     ) -> Dict[str, float]:
         """
-        Fit KMeans on the combined data then compare cluster-assignment
-        distributions of the two datasets.
+        Assign points from both datasets to clusters and compare their
+        cluster-assignment distributions.
+
+        Uses a cached KMeans model (fitted on reference data) when available;
+        otherwise fits KMeans on the combined data.
 
         Returned metrics:
         - ``cluster_cosine_similarity``: cosine similarity of the two cluster
-          frequency vectors (how similarly distributed across clusters)
+          frequency vectors
         - ``cluster_overlap``: sum of per-cluster minimum proportions
-          (intersection-over-union proxy)
         - ``cluster_nmi``: Normalized Mutual Information between dataset
           membership and cluster assignment
 
         Args:
             data1: First dataset
             data2: Second dataset
-            n_clusters: Number of KMeans clusters
-            random_state: Reproducibility seed
+            n_clusters: Number of KMeans clusters (ignored if cached)
+            random_state: Reproducibility seed (ignored if cached)
 
         Returns:
             Dict with three float metrics
@@ -222,14 +320,18 @@ class AdvancedSimilarityAnalyzer:
         data1 = np.atleast_2d(np.asarray(data1, dtype=float))
         data2 = np.atleast_2d(np.asarray(data2, dtype=float))
 
-        combined = np.vstack([data1, data2])
-        k = min(n_clusters, combined.shape[0])
-
-        kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-        labels = kmeans.fit_predict(combined)
-
-        n1 = len(data1)
-        labels1, labels2 = labels[:n1], labels[n1:]
+        if "kmeans" in self._cache:
+            kmeans = self._cache["kmeans"]
+            k = self._cache["n_clusters"]
+            labels1 = kmeans.predict(data1)
+            labels2 = kmeans.predict(data2)
+        else:
+            combined = np.vstack([data1, data2])
+            k = min(n_clusters, combined.shape[0])
+            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+            all_labels = kmeans.fit_predict(combined)
+            n1 = len(data1)
+            labels1, labels2 = all_labels[:n1], all_labels[n1:]
 
         def cluster_dist(lbl):
             counts = np.bincount(lbl, minlength=k).astype(float)
@@ -247,9 +349,9 @@ class AdvancedSimilarityAnalyzer:
         overlap = float(np.minimum(dist1, dist2).sum())
 
         group_labels = np.concatenate(
-            [np.zeros(n1, dtype=int), np.ones(len(data2), dtype=int)]
+            [np.zeros(len(data1), dtype=int), np.ones(len(data2), dtype=int)]
         )
-        nmi = float(normalized_mutual_info_score(group_labels, labels))
+        nmi = float(normalized_mutual_info_score(group_labels, np.concatenate([labels1, labels2])))
 
         return {
             "cluster_cosine_similarity": cos_sim,
@@ -310,8 +412,8 @@ class AdvancedSimilarityAnalyzer:
             "noise_ratio_data2": nr2,
         }
 
-    @staticmethod
     def adjusted_rand_similarity(
+        self,
         data1: np.ndarray,
         data2: np.ndarray,
         n_clusters: int = 3,
@@ -342,10 +444,11 @@ class AdvancedSimilarityAnalyzer:
             )
 
         k = min(n_clusters, len(data1))
-        km = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+        km1 = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+        km2 = KMeans(n_clusters=k, random_state=random_state, n_init=10)
 
-        labels1 = km.fit_predict(data1)
-        labels2 = km.fit_predict(data2)
+        labels1 = km1.fit_predict(data1)
+        labels2 = km2.fit_predict(data2)
 
         return float(adjusted_rand_score(labels1, labels2))
 
@@ -353,8 +456,8 @@ class AdvancedSimilarityAnalyzer:
     # Aggregation helper
     # ------------------------------------------------------------------
 
-    @staticmethod
     def compare_all(
+        self,
         data1: np.ndarray,
         data2: np.ndarray,
         n_components: int = 2,
@@ -363,6 +466,9 @@ class AdvancedSimilarityAnalyzer:
     ) -> Dict[str, object]:
         """
         Run all advanced similarity metrics and return results as a flat dict.
+
+        Cached models (from a prior ``fit()`` call) are reused automatically,
+        making repeated calls against the same reference dataset fast.
 
         Args:
             data1: First dataset  (2D numerical array)
@@ -375,25 +481,24 @@ class AdvancedSimilarityAnalyzer:
             Dict mapping metric names to values (None on failure, with
             a companion ``<name>_error`` key describing the exception)
         """
-        analyzer = AdvancedSimilarityAnalyzer()
         results: Dict[str, object] = {}
 
         scalar_metrics = [
             (
                 "pca_embedding_similarity",
-                lambda: analyzer.pca_embedding_similarity(data1, data2, n_components),
+                lambda: self.pca_embedding_similarity(data1, data2, n_components),
             ),
             (
                 "svd_embedding_similarity",
-                lambda: analyzer.svd_embedding_similarity(data1, data2, n_components),
+                lambda: self.svd_embedding_similarity(data1, data2, n_components),
             ),
             (
                 "kernel_mmd_similarity",
-                lambda: analyzer.kernel_mmd_similarity(data1, data2),
+                lambda: self.kernel_mmd_similarity(data1, data2),
             ),
             (
                 "lda_topic_similarity",
-                lambda: analyzer.lda_topic_similarity(data1, data2, n_topics),
+                lambda: self.lda_topic_similarity(data1, data2, n_topics),
             ),
         ]
 
@@ -407,11 +512,11 @@ class AdvancedSimilarityAnalyzer:
         dict_metrics = [
             (
                 "kmeans",
-                lambda: analyzer.kmeans_cluster_similarity(data1, data2, n_clusters),
+                lambda: self.kmeans_cluster_similarity(data1, data2, n_clusters),
             ),
             (
                 "dbscan",
-                lambda: analyzer.dbscan_structure_similarity(data1, data2),
+                lambda: self.dbscan_structure_similarity(data1, data2),
             ),
         ]
 
