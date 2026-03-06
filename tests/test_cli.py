@@ -184,3 +184,66 @@ class TestCompareRef:
         proc = run_cli("compare-ref", fref, fq1, fq2,
                        "--metrics", "advanced", "--n-topics", "3", "--n-clusters", "3")
         assert proc.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# plot subcommand
+# ---------------------------------------------------------------------------
+
+class TestPlot:
+    def test_plot_help_exits_zero(self):
+        proc = run_cli("plot", "--help")
+        assert proc.returncode == 0
+
+    def test_pca_creates_output_file(self, csv_pair, tmp_path):
+        fa, fb = csv_pair
+        out = tmp_path / "pca.png"
+        proc = run_cli("plot", "pca", fa, fb, "--output", str(out))
+        assert proc.returncode == 0, proc.stderr
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_dist_creates_output_file(self, csv_pair, tmp_path):
+        fa, fb = csv_pair
+        out = tmp_path / "dist.png"
+        proc = run_cli("plot", "dist", fa, fb, "--output", str(out))
+        assert proc.returncode == 0, proc.stderr
+        assert out.exists()
+
+    def test_heatmap_creates_output_file(self, ref_and_queries, tmp_path):
+        fref, fq1, fq2 = ref_and_queries
+        out = tmp_path / "heatmap.png"
+        proc = run_cli("plot", "heatmap", fref, fq1, fq2,
+                       "--output", str(out),
+                       "--n-topics", "3", "--n-clusters", "3")
+        assert proc.returncode == 0, proc.stderr
+        assert out.exists()
+
+    def test_pca_3d_flag(self, csv_pair, tmp_path):
+        fa, fb = csv_pair
+        out = tmp_path / "pca3d.png"
+        proc = run_cli("plot", "pca", fa, fb, "--n-components", "3", "--output", str(out))
+        assert proc.returncode == 0, proc.stderr
+        assert out.exists()
+
+    def test_saved_message_on_stderr(self, csv_pair, tmp_path):
+        fa, fb = csv_pair
+        out = tmp_path / "pca.png"
+        proc = run_cli("plot", "pca", fa, fb, "--output", str(out))
+        assert "Saved" in proc.stderr
+
+    def test_missing_plot_type_exits_nonzero(self, csv_pair):
+        fa, fb = csv_pair
+        proc = run_cli("plot")
+        assert proc.returncode != 0
+
+    def test_dist_max_features(self, tmp_path):
+        rng = np.random.default_rng(42)
+        data = rng.normal(size=(20, 10))
+        fa = tmp_path / "wide.csv"
+        write_csv(fa, data)
+        out = tmp_path / "dist.png"
+        proc = run_cli("plot", "dist", str(fa), str(fa), "--max-features", "4",
+                       "--output", str(out))
+        assert proc.returncode == 0, proc.stderr
+        assert out.exists()
